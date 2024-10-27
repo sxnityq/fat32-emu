@@ -1,0 +1,147 @@
+========
+My hexdump /dev/nvmen1p1 -C | less
+
+00000000  eb 58 90 6d 6b 66 73 2e  66 61 74 00 02 08 20 00  |.X.mkfs.fat... .|
+00000010  02 00 00 00 00 f8 00 00  20 00 40 00 00 08 00 00  |........ .@.....|
+00000020  00 00 10 00 00 04 00 00  00 00 00 00 02 00 00 00  |................|
+00000030  01 00 06 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00000040  80 01 29 92 a9 12 c3 4e  4f 20 4e 41 4d 45 20 20  |..)....NO NAME  |
+00000050  20 20 46 41 54 33 32 20  20 20 0e 1f be 77 7c ac  |  FAT32   ...w|.|
+00000060  22 c0 74 0b 56 b4 0e bb  07 00 cd 10 5e eb f0 32  |".t.V.......^..2|
+00000070  e4 cd 16 cd 19 eb fe 54  68 69 73 20 69 73 20 6e  |.......This is n|
+00000080  6f 74 20 61 20 62 6f 6f  74 61 62 6c 65 20 64 69  |ot a bootable di|
+00000090  73 6b 2e 20 20 50 6c 65  61 73 65 20 69 6e 73 65  |sk.  Please inse|
+000000a0  72 74 20 61 20 62 6f 6f  74 61 62 6c 65 20 66 6c  |rt a bootable fl|
+000000b0  6f 70 70 79 20 61 6e 64  0d 0a 70 72 65 73 73 20  |oppy and..press |
+000000c0  61 6e 79 20 6b 65 79 20  74 6f 20 74 72 79 20 61  |any key to try a|
+000000d0  67 61 69 6e 20 2e 2e 2e  20 0d 0a 00 00 00 00 00  |gain ... .......|
+000000e0  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+======
+
+File attributes:
+    ATTR_READ_ONLY 0x01
+    ATTR_HIDDEN 0x02
+    ATTR_SYSTEM 0x04
+    ATTR_VOLUME_ID 0x08
+    ATTR_DIRECTORY 0x10
+    ATTR_ARCHIVE 0x20
+    ATTR_LONG_NAME 
+                ATTR_READ_ONLY |
+                ATTR_HIDDEN |
+                ATTR_SYSTEM |
+                ATTR_VOLUME_ID
+
+The upper two bits of the attribute byte are reserved and should
+always be set to 0 when a file is created and never modified or
+looked at after that.
+
+
+FAT itself -> data structure that defines a 
+linked list of extents (clusters) of a file
+
+content of a dir is 32byte fat dir entries
+
+FirstDataSector = 
+ReservedSectors + (FatCount * SectorsPerFat32) + 0;
+
+count of sectors in the data region of the volume:
+DataSec = TotalSectors32 – (ReservedSectors + 
+(FatCount * SectorsPerFat32) + RootDirSectors)
+
+count of clusters
+CountOfClusters = DataSec / SectorsPerCluster
+
+FAT32Offset = N (cluster number) * 4
+
+sector number of the FAT sector that contains the entry for cluster N in the first FAT
+ThisFATsectorNumber = ReservedSectors + (FATOffset / BytesPerSector)
+
+FAT32 entry is 28 bit long. 4 bytes are reserved and should never be used
+
+Any cluster that contains the “BAD CLUSTER”
+value in its FAT entry is a cluster that should not be placed
+on the free list because it is prone to disk errors
+
+The list of free clusters in the FAT is nothing more 
+than the list of all clusters that contain the value 0
+in their FAT cluster entry. 
+
+This list of free clusters is not stored anywhere on the volume; it must be
+computed when the volume is mounted by scanning the FAT for entries
+that contain the value 0. 
+On FAT32 volumes, the BPB_FSInfo sector may contain
+a valid count of free clusters on the volume
+
+entry marks:
+BAD_CLUSTER = 0xFFFFFF7
+EOC(End Of Clusterchain) = 0xFFFFFFF
+
+In the directory entry, 
+the cluster number of the first cluster of the file is recorded. 
+(FAT32 entry records first cluster from which file data begins)
+
+The first cluster (extent) of the file is the data
+associated with this first cluster number, 
+and the location of that data on the volume is computed from
+the cluster number as described earlier (computation of FirstSectorofCluster).
+
+We also have 2 reserved clusters in each FAT32 table
+
+FAT[0] = MediaDecriptor = 0x0FFFFFF8.
+FAT[1] = is set by FORMAT to EOC mark
+fs driver may use high two bits for dirty volume flags
+
+For FAT32:
+    CleanShutBitMask = 0x08000000;
+    HardErrBitMask = 0x04000000;
+
+Bit ClnShutBitMask:
+* If bit is 1, volume is “clean”.
+* If bit is 0, volume is “dirty”. 
+This indicates that the file system driver did not
+Dismount the volume properly the last time it had the volume mounted. It
+would be a good idea to run a Chkdsk/Scandisk disk repair utility on it,
+because it may be damaged.
+
+
+Bit HrdErrBitMask:
+* If this bit is 1, no disk read/write errors were encountered.
+* If this bit is 0, the file system driver encountered a disk I/O error on the
+Volume the last time it was mounted, which is an indicator that some sectors
+may have gone bad on the volume. It would be a good idea to run a
+Chkdsk/Scandisk disk repair utility that does surface analysis on it to look
+for new bad sectors.
+
+
+DATA AREA IS MANAGED IN CLUSTERS!!!
+EACH ITEM OF FAT IS ASSOCIATED WITH WITH EACH CLUSTER IN THE DATA AREA
+
+1FAT ENTRY = 1 CLUSTER IN DATA AREA
+
+TOP 2 FAT ENTRY ARE RESERVED AND NOT ASSOCIATED WITH ANY CLUSTER
+THE THIRD ENTRY (FAT32[2]) IS ASSOCIATED WITH FIRST DATA ARE CLUSTER
+
+FAT32 ENTRY is 32 bit long, where first 4 bits are reserved
+FAT IS A SIMPLE GENERIC INTEGER ARRAY!!!
+
+
+FAT BYTE OFFSET = N * 4 ( because one f*cking entry is 32 bit long)
+FAT SECTOR NUMBER FOR ENTRY = ReservedSectors + (N * 4 / BytesPerSector) 
+-> here we get actual sector in fat table that is responsible for storing data area info
+
+FAT OFFSET ENTRY = (N * 4 % BytesPerSector)
+-> here we get offset in sector
+
+
+
+
+
+
+
+
+
+1 entry = 2**4 (32)
+2**28   = maximum disk file size
+2048 (2**11) = claster size
+
+131 072 (2**17) = max count clusters (entries)
