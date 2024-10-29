@@ -2,13 +2,13 @@
 #include <stddef.h>
 
 
-#define BAD_BLOCK       0x0FFFFFF7
+#define BAD_BLOCK       0xFFFFFFF7
 #define FREE_BLOCK      0x00000000
-#define RESERVED_BLOCK  0x0FFFFFF6
-#define EOC_BLOCK       0x0FFFFFFF
+#define RESERVED_BLOCK  0xFFFFFFF6
+#define EOC_BLOCK       0xFFFFFFF8
 
-#define CleanShutBitMask 0x08000000
-#define HardErrBitMask   0x04000000
+#define CleanShutBitMask 0x80000000
+#define HardErrBitMask   0x40000000
 
 
 // this struct gives everything u have to know about physical layout of my FAT32 emu
@@ -75,8 +75,9 @@ typedef struct
     uint16_t write_date;     // Date of last write
     uint16_t first_cluster_lower;     //Lower part of cluster number
     uint32_t file_size;          //file size in bytes
-} DirectoryEntry;
+} __attribute__((packed)) DirectoryEntry;
 
+typedef uint32_t Fat32entry;
 
 typedef struct
 {
@@ -85,3 +86,4 @@ typedef struct
 
 
 int get_optimal_FAT32sectors(size_t disk_size);
+int extract_dir_entry(char *buf32, DirectoryEntry*);
