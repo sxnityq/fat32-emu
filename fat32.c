@@ -14,48 +14,25 @@
 #define DEFAULT_DISKSIZE 20971520 //20M = 1024 * 1024 * 20. Used when pathname for disk does not exist 
 #define MAX_DISKSIZE 268435456 // 256M 2**28
 
-int cd(BootSector* vbs, FSinfo *fsinfo);
-int ls(Disk* disk, BootSector* vbs, FSinfo *fsinfo);
-int touch(Disk* disk, BootSector* vbs, FSinfo *fsinfo, char *filename);
+int cd(char *pathname);
+int ls(void);
+int touch(char *filename);
 void create_file(char *filename, int isDir, DirectoryEntry* dir_entry);
-int allocate_cluster(Disk* disk, BootSector* vbs, FSinfo *fsinfo);
+int allocate_cluster(void);
+int pathfinder(char *filename);
+int my_mkdir(char *filename);
+
+Disk g_disk;
+BootSector g_vbs;
+FSinfo g_fsinfo;
+FILE *fp;
 
 
-//int mkdir(BootSector* vbs, FSinfo *fsinfo);
-
-int allocate_cluster(Disk *disk, BootSector *vbs, FSinfo *fsinfo){
-    
-    FILE *fp;
-    Fat32Entry fat32entry;
-
-    fp = fopen(disk->absolute_path, "r+");
-    fseek(fp, disk->fat_area, SEEK_SET);
-
-    int fat32len = vbs->sectors_per_fat32 * vbs->bytes_per_sector;
-    for (
-            int i = 0, j = 0; i < fat32len;
-            i += 4, j++
-        )
-        {
-        fread(&fat32entry, 4, 1, fp);
-        if ((fat32entry.mark & 0xFFFFFFFF) == 0){
-            fat32entry.mark = EOC_BLOCK;
-            fseek(fp, disk->fat_area + (j * 4), SEEK_SET);
-            fwrite(&fat32entry, sizeof(fat32entry), 1, fp);
-            printf("new allocated cluster number: %d\n", j);
-            fclose(fp);
-            return j;
-        }
-    }
-    fclose(fp);
-    return -1;
-}
-
-
-int open_disk(char *pathname, Disk *disk){
+int open_disk(char *pathname){
     
     struct stat sb;
     size_t pathlen;
+
 
     /* Check if file exist, otherwise create it */
 
@@ -64,6 +41,8 @@ int open_disk(char *pathname, Disk *disk){
             printf("creation error\n");
             return -1;
         }
+    } else {
+        fp = fopen(pathname, "r+");
     }
 
     if (stat(pathname, &sb)!= 0){
@@ -79,45 +58,40 @@ int open_disk(char *pathname, Disk *disk){
     }
     
     pathlen = strlen(pathname);
-    
-    disk->disk_size = sb.st_size;
-    disk->absolute_path = malloc(pathlen);
-    strncpy(disk->absolute_path, pathname, pathlen);
+
+    g_disk.disk_size = sb.st_size;
+    g_disk.absolute_path = malloc(pathlen);
+    strncpy(g_disk.absolute_path, pathname, pathlen);
     return 0;
 }
 
 
 int create_disk(char *pathname){
-    FILE *fp;
     
-    fp = fopen(pathname, "w");
+
+    fp = fopen(pathname, "w+");
+    
     if ( fp == NULL ){
         return -1;
     }
     if (fseek(fp, DEFAULT_DISKSIZE, SEEK_SET) == -1){
         return -1;
     }
+
     fputc('\0', fp);
-    fclose(fp);
+    fseek(fp, 0, SEEK_SET);
+
     return 0;
 }
 
 
-/* int extract_dir_entry(char *buf32, DirectoryEntry* dir_entry){
-    dir_entry = (DirectoryEntry *) buf32;
-} */
-
 int wipe_disk(char *pathname, size_t disk_size){
 
-    FILE *fp;
     int status;
 
-    fp = fopen(pathname, "w");
 
-    if (fp == NULL){
-        printf("error while opening file\n");
-        return -1;
-    }
+    fseek(fp, g_disk.reserved_area, SEEK_SET);
+
     for (int i = 0; i < disk_size; i++){
         status = fputc('\0', fp);
         if (status == -1){
@@ -130,41 +104,210 @@ int wipe_disk(char *pathname, size_t disk_size){
         }
     }
     printf("disk file successfully wiped! Congrats\n");
-    fclose(fp);
     return 0;
 }
 
-
-int ls(Disk *disk, BootSector *vbs, FSinfo *fsinfo){
+/*====================================
+WORK WITH FILE SYSTEM RAHTER THAN DISK
+======================================*/
+int format_disk(){
     
-    FILE *fp;
+    Fat32Entry f32entry;
+    int fat32_sectors, total_sectors, faf32offset;
+    
+    fseek(fp, 0, SEEK_SET);
+    fat32_sectors = get_optimal_FAT32sectors(g_disk.disk_size);
+    total_sectors = g_disk.disk_size / 512;
+    
+
+    // VOLUME BOOT SECTOR
+    memset(g_vbs.boot_jump_instruction, '\0', 3);
+    memcpy(g_vbs.OEM_identifier, OEM, sizeof(OEM));
+    g_vbs.bytes_per_sector   = 512;
+    g_vbs.sector_per_cluster = 4;
+    g_vbs.reserved_sectors   = 32; // 8 clusters
+    g_vbs.fat_count          = 2;
+    g_vbs.root_enrtry_count  = 0;
+    g_vbs.total_sectors16    = 0;
+    g_vbs.media_descriptor   = 0xF8; // fixed (non removable) 0xF0 for removable (it anyway in my emu dont make sense so who cares)
+    g_vbs.sectors_per_fat16  = 0;
+    g_vbs.sectors_per_track  = 0;
+    g_vbs.number_of_heads    = 0;
+    g_vbs.hidden_sectors     = 0; // number of sectors before volume boot sector. In our case it will always be 0
+    g_vbs.total_sectors32    = total_sectors;
+    g_vbs.sectors_per_fat32  = fat32_sectors;
+    g_vbs.ext_flags          = 0;
+    g_vbs.file_system_version = 0;
+    g_vbs.root_cluster_number = 2;
+    g_vbs.FSinfo              = 1;
+    g_vbs.backup_boot_sector  = 6;
+    memset(g_vbs.reserved1, '\0', 12);
+    g_vbs.drive_number        = 0;
+    g_vbs.reserved2           = 0;
+    g_vbs.boot_signature      = 0x29;
+    g_vbs.serial_number       = 12345;
+    memcpy(g_vbs.volume_label, "NO NAME    ", 11);
+    memcpy(g_vbs.file_system_type, "FAT32   ", 8);
+    memset(g_vbs.boot_code, '\0', 420);
+    g_vbs.trial_signature     =  0xAA55;
+
+
+    // FSINFO
+    g_fsinfo.lead_signature = 0x41615252;
+    memset(g_fsinfo.reserved1, '\0', 480);
+    g_fsinfo.struct_signature = 0x61417272;
+    g_fsinfo.free_clusters =  0xFFFFFFFF;
+    g_fsinfo.next_free =  0xFFFFFFFF;
+    memset(g_fsinfo.reserved2, '\0', 12);
+    g_fsinfo.trial_signature = 0xAA550000;
+
+    
+    printf("volume BootSector size: %lu\n", sizeof(g_vbs));
+
+    if (wipe_disk(g_disk.absolute_path, g_disk.disk_size) != 0){
+        return -1;
+    }
+
+    g_disk.reserved_area = 0;
+    g_disk.fat_area      = g_vbs.reserved_sectors * g_vbs.bytes_per_sector;
+    g_disk.data_area     = g_disk.fat_area + (g_vbs.sectors_per_fat32 * 512 
+                            * g_vbs.fat_count) + g_vbs.root_cluster_number * 512 * 4;
+    g_disk.data_offset = 32;
+    g_disk.fat32_offset = 4;
+    g_disk.current_directory = g_disk.data_area;
+
+
+    fseek(fp, g_disk.reserved_area, SEEK_SET);
+    // RESERVED AREA
+    fwrite(&g_vbs, sizeof(g_vbs), 1, fp);
+    fseek(fp, (g_vbs.FSinfo * g_vbs.bytes_per_sector), SEEK_SET);
+    fwrite(&g_fsinfo, sizeof(g_fsinfo), 1, fp);
+    fseek(fp, (g_vbs.backup_boot_sector * g_vbs.bytes_per_sector), SEEK_SET);
+    fwrite(&g_vbs, sizeof(g_vbs), 1, fp);           // make a volume boot sector backup
+    fwrite(&g_fsinfo, sizeof(g_fsinfo), 1, fp);     // and add fsinfo backup also
+
+    // FAT32 AREA
+    fseek(fp, (g_vbs.reserved_sectors  * g_vbs.bytes_per_sector), SEEK_SET);
+    f32entry.mark = (g_vbs.media_descriptor ^ 0xFFFFFFFF) ^ 0xFF;
+    fwrite(&f32entry, sizeof(f32entry), 1, fp);
+    f32entry.mark = (HardErrBitMask | CleanShutBitMask ) ^ 0xFFFFFFFF ^ 0xC0000000;
+    fwrite(&f32entry, sizeof(f32entry), 1, fp);
+    f32entry.mark = EOC_BLOCK;
+    fwrite(&f32entry, sizeof(f32entry), 1, fp);
+    
+}
+
+
+int get_optimal_FAT32sectors(size_t disk_size){
+    /*     
+    1 fat32 entry = 32 bit
+    1 entry = 1 cluster number (512*4)
+    so we first get count of entries that we have 2 aquire disk_size / (512 * 4)
+    and then multypling it for fat entry size and convert to sectors instead of bytes
+    */
+    return (disk_size / (512 * 4) * 32) / 512;
+}
+
+// main purpose is to find free block in FAT32 area and mark it is EOC. NOTHING MORE!
+int allocate_cluster(){
+    
+    Fat32Entry fat32entry;
+
+    fseek(fp, g_disk.fat_area, SEEK_SET);
+
+    int fat32len = g_vbs.sectors_per_fat32 * g_vbs.bytes_per_sector;
+
+    // 1 ENTRY = 32 BITS = 4 BYTES 
+    // walking through fat32 table to find unused cluster and marks it as EOC
+    for (
+            int i = 0, j = 0; i < fat32len;
+            i += 4, j++
+        )
+        {
+        fread(&fat32entry, 4, 1, fp);
+        if ((fat32entry.mark & 0xFFFFFFFF) == 0){
+            fat32entry.mark = EOC_BLOCK;
+            fseek(fp, g_disk.fat_area + (j * 4), SEEK_SET);
+            fwrite(&fat32entry, sizeof(fat32entry), 1, fp);
+            printf("new allocated cluster number: %d\n", j);
+            return j;
+        }
+    }
+    return -1;
+}
+
+
+int pathfinder(char *filepath){
+    
+    char *token;
+    uint32_t start_directory;
+    DirectoryEntry dir_entry;
+
+    int read_block = g_vbs.sector_per_cluster * g_vbs.bytes_per_sector;
+
+    if (filepath[0] == '\\'){
+        start_directory = g_disk.data_area;
+    } else {
+        start_directory = g_disk.current_directory;
+    }
+
+    fseek(fp, start_directory, SEEK_SET);
+    token = strtok(filepath, "\\");    
+
+    while(token != NULL){
+        for (int i = 0; i < read_block; i += g_disk.data_offset){
+            fread(&dir_entry, sizeof(dir_entry), 1, fp);
+            if (strncmp(token, dir_entry.directory_name, 11) == 0){
+                return i + start_directory;
+            }
+        }
+        token = strtok(NULL, "\\");
+    }
+    return -1;
+}
+
+
+int ls(){
+    
     int read_block;
-    char buf[32];
-    DirectoryEntry *dir_entry;
+    DirectoryEntry dir_entry;
 
-    read_block = vbs->bytes_per_sector * vbs->sector_per_cluster; //2048
+    read_block = g_vbs.bytes_per_sector * g_vbs.sector_per_cluster; //2048    
+    fseek(fp, g_disk.data_area, SEEK_SET);
     
-    fp = fopen(disk->absolute_path, "r+");
-    fseek(fp, disk->data_area, SEEK_SET);
-    
-
     while(1){
-        for (int i = 0; i < 128; i += disk->entry_offset){
-            fread(buf, disk->entry_offset, 1, fp);
-            dir_entry = (DirectoryEntry *) buf;
-            printf("file name: %s\t%d\t", dir_entry->directory_name, dir_entry->directory_name[0]);
-            printf("start cluster: %d\n", dir_entry->first_cluster_lower);
+        for (int i = 0; i < read_block; i += g_disk.data_offset){
+            fread(&dir_entry, g_disk.data_offset, 1, fp);
+            if ((dir_entry.creation_date | 0x00000000) == 0){
+                return 0;
+            }
+            if (dir_entry.directory_attributes & ATTR_HIDDEN){
+                continue;
+            }
+            printf("file name: %s\tstart cluster: %d\n", dir_entry.directory_name,
+                            dir_entry.first_cluster_lower);
         }
         break;
     }
     return 0;
 }
 
+
+
+
+
+int cd(char *pathname){
+    return 1;
+}
+
+
 void create_file(char* filename, int isDir, DirectoryEntry *dir_entry){
     
     time_t now;
     int _date, _time, _year, _mon,
     _day, _hour, _min, _sec;
+    int cluster_number;
+    int attributes = 0;
 
     now = time(NULL);
     struct tm *tm;
@@ -185,7 +328,6 @@ void create_file(char* filename, int isDir, DirectoryEntry *dir_entry){
     _year = (tm->tm_year - 80)  & 0xFF ;
     _mon = tm->tm_mon & 0xF;
     _day = tm->tm_mday & 0x1F;
-    //printf("year: %d, mon: %d, day: %d\n", _year, _mon, _day);
 
     /* 
         Bits 0–4: 2-second count, valid value range 0–29 inclusive (0 – 58 seconds).
@@ -207,32 +349,46 @@ void create_file(char* filename, int isDir, DirectoryEntry *dir_entry){
     dir_entry->write_date = _date;
     dir_entry->write_time = _time;
     dir_entry->file_size = 35;
+    // allocate new memory in fat32 table and returns new cluster number
+    cluster_number = allocate_cluster();
+
+    // fill cluster number in struct
+    dir_entry->first_cluster_high = (cluster_number & 0xFFFF0000) >> 16;
+    dir_entry->first_cluster_lower = cluster_number & 0x0000FFFF;
+
+    if (filename[0] == '.'){
+        attributes |= ATTR_HIDDEN;
+    }
+    if (isDir == 0){
+        attributes |= ATTR_DIRECTORY;
+    }
+
+    dir_entry->directory_attributes = attributes;
+
     return;
 }
 
-int touch(Disk *disk, BootSector *vbs, FSinfo *fsinfo, char *filename){
+
+int touch(char *filename){
     
-    FILE *fp;
     int read_block, cluster_number;
     DirectoryEntry dir_entry;
 
-    read_block = vbs->bytes_per_sector * vbs->sector_per_cluster;
-    fp = fopen(disk->absolute_path, "r+");
-    fseek(fp, disk->data_area, SEEK_SET);
+    read_block = g_vbs.bytes_per_sector * g_vbs.sector_per_cluster;
+    fseek(fp, g_disk.data_area, SEEK_SET);
 
     while(1){
-        for (int i = 0; i < read_block; i += disk->entry_offset){
-            fread(&dir_entry, disk->entry_offset, 1, fp);
+        for (int i = 0; i < read_block; i += g_disk.data_offset){
+            
+            // read each entry to find free space to plase new direcotry entry strcuture
+            fread(&dir_entry, g_disk.data_offset, 1, fp);
             if (dir_entry.creation_time == 0){
-                create_file(filename, 0, &dir_entry);
-                cluster_number = allocate_cluster(disk, vbs, fsinfo);
 
-                dir_entry.first_cluster_high = (cluster_number & 0xFFFF0000) >> 16;
-                dir_entry.first_cluster_lower = cluster_number & 0x0000FFFF;
-                
-                fseek(fp, disk->data_area + i, SEEK_SET);
+                // fill dir_entry struct with meta information
+                create_file(filename, 0, &dir_entry);
+                fseek(fp, g_disk.data_area + i, SEEK_SET);
+                //write new dir entry inside directory
                 fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
-                fseek(fp, disk->data_area, SEEK_SET);
                 break;
             }
         }
@@ -241,120 +397,38 @@ int touch(Disk *disk, BootSector *vbs, FSinfo *fsinfo, char *filename){
     return 0;
 }
 
-int format_disk(Disk *disk, BootSector* vbs, FSinfo *fsinfo){
-    
-    Fat32Entry f32entry;
 
-    FILE *fp;
-    
-    int fat32_sectors, total_sectors, faf32offset;
-    
-    fat32_sectors = get_optimal_FAT32sectors(disk->disk_size);
-    total_sectors = disk->disk_size / 512;
-    
-    // VOLUME BOOT SECTOR
-    memset(vbs->boot_jump_instruction, '\0', 3);
-    memcpy(vbs->OEM_identifier, OEM, sizeof(OEM));
-    vbs->bytes_per_sector   = 512;
-    vbs->sector_per_cluster = 4;
-    vbs->reserved_sectors   = 32; // 8 clusters
-    vbs->fat_count          = 2;
-    vbs->root_enrtry_count  = 0;
-    vbs->total_sectors16    = 0;
-    vbs->media_descriptor   = 0xF8; // fixed (non removable) 0xF0 for removable (it anyway in my emu dont make sense so who cares)
-    vbs->sectors_per_fat16  = 0;
-    vbs->sectors_per_track  = 0;
-    vbs->number_of_heads    = 0;
-    vbs->hidden_sectors     = 0; // number of sectors before volume boot sector. In our case it will always be 0
-    vbs->total_sectors32    = total_sectors;
-    vbs->sectors_per_fat32  = fat32_sectors;
-    vbs->ext_flags          = 0;
-    vbs->file_system_version = 0;
-    vbs->root_cluster_number = 2;
-    vbs->FSinfo              = 1;
-    vbs->backup_boot_sector  = 6;
-    memset(vbs->reserved1, '\0', 12);
-    vbs->drive_number        = 0;
-    vbs->reserved2           = 0;
-    vbs->boot_signature      = 0x29;
-    vbs->serial_number       = 12345;
-    memcpy(vbs->volume_label, "NO NAME    ", 11);
-    memcpy(vbs->file_system_type, "FAT32   ", 8);
-    memset(vbs->boot_code, '\0', 420);
-    vbs->trial_signature     =  0xAA55;
-
-
-    // FSINFO
-    fsinfo->lead_signature = 0x41615252;
-    memset(fsinfo->reserved1, '\0', 480);
-    fsinfo->struct_signature = 0x61417272;
-    fsinfo->free_clusters =  0xFFFFFFFF;
-    fsinfo->next_free =  0xFFFFFFFF;
-    memset(fsinfo->reserved2, '\0', 12);
-    fsinfo->trial_signature = 0xAA550000;
-
-    
-    printf("volume BootSector size: %lu\n", sizeof(vbs));
-
-    if (wipe_disk(disk->absolute_path, disk->disk_size) != 0){
-        return -1;
-    }
-
-    fp = fopen(disk->absolute_path, "r+");
-    // RESERVED AREA
-    fwrite(vbs, sizeof(*vbs), 1, fp);
-    fseek(fp, (vbs->FSinfo * vbs->bytes_per_sector), SEEK_SET);
-    fwrite(fsinfo, sizeof(*fsinfo), 1, fp);
-    fseek(fp, (vbs->backup_boot_sector * vbs->bytes_per_sector), SEEK_SET);
-    fwrite(vbs, sizeof(*vbs), 1, fp);           // make a volume boot sector backup
-    fwrite(fsinfo, sizeof(*fsinfo), 1, fp);     // and add fsinfo backup also
-
-    // FAT32 AREA
-    fseek(fp, (vbs->reserved_sectors  * vbs->bytes_per_sector), SEEK_SET);
-    f32entry.mark = (vbs->media_descriptor ^ 0xFFFFFFFF) ^ 0xFF;
-    fwrite(&f32entry, sizeof(f32entry), 1, fp);
-    f32entry.mark = (HardErrBitMask | CleanShutBitMask ) ^ 0xFFFFFFFF ^ 0xC0000000;
-    fwrite(&f32entry, sizeof(f32entry), 1, fp);
-    f32entry.mark = EOC_BLOCK;
-    fwrite(&f32entry, sizeof(f32entry), 1, fp);
-    fclose(fp);
-
-
-
-    disk->reserved_area = 0;
-    disk->fat_area      = vbs->reserved_sectors * vbs->bytes_per_sector;
-    disk->data_area     = disk->fat_area + (vbs->sectors_per_fat32 * 512 
-                            * vbs->fat_count) + vbs->root_cluster_number * 512 * 4;
-    disk->entry_offset = 32;
-
-    
+int my_mkdir(char *filename){
+    return 1;
 }
 
 
-int get_optimal_FAT32sectors(size_t disk_size){
-    /*     
-    1 fat32 entry = 32 bit
-    1 entry = 1 cluster number (512*4)
-    so we first get count of entries that we have 2 aquire disk_size / (512 * 4)
-    and then multypling it for fat entry size and convert to sectors instead of bytes
-    */
-    return (disk_size / (512 * 4) * 32) / 512;
-}
 
-
-void loop(Disk *disk){
+void loop(){
     
     BootSector vbs;
     FSinfo fsinfo;
     DirectoryEntry* dir;
 
-    //create_file("sperma", 1, dir, disk, vbs, fsinfo);
-    format_disk(disk, &vbs, &fsinfo);
-    ls(disk, &vbs, &fsinfo);
-    touch(disk, &vbs, &fsinfo, "testfi");
-    ls(disk, &vbs, &fsinfo);
-    touch(disk, &vbs, &fsinfo, "testfile2");
-    ls(disk, &vbs, &fsinfo);
+    format_disk();
+    ls();
+
+    if(pathfinder("sperma5") != -1){
+        printf("file sperma exists\n");
+    } else {
+        printf("file sperma does not exists\n");
+    }
+    touch("sperma");
+    touch("sperma2");
+    touch("sperma5");
+    if(pathfinder("sperma5") != -1){
+        printf("file sperma exists\n");
+    } else {
+        printf("file sperma does not exists\n");
+    }
+    touch(".Dimaloot");
+    touch("LootIn)");
+    ls();
 }
 
 int main(int argc, char *argv[])
@@ -365,9 +439,9 @@ int main(int argc, char *argv[])
     }
     
     char *pathname = argv[1];
-    Disk disk;
-    if (open_disk(pathname, &disk) == 0){
-        loop(&disk);
+    
+    if (open_disk(pathname) == 0){
+        loop(fp);
     }
     return 0;
 }

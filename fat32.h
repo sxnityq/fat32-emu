@@ -10,6 +10,17 @@
 #define CleanShutBitMask 0x80000000
 #define HardErrBitMask   0x40000000
 
+/* file attribute in combination of following flags. 
+Upper 2 bits are reserved and must be zero.
+*/
+#define ATTR_READ_ONLY          0x01 // (Read-only) Do not allow to modify file 
+#define ATTR_HIDDEN             0x02 // (Hidden) Not show files while using ls
+#define ATTR_SYSTEM             0x04 // (System) for some system files idk
+#define ATTR_VOLUME_ID          0x08 // (Volume label) Only for root directory
+#define ATTR_DIRECTORY          0x10 // (Directory) For mark that file is directory
+#define ATTR_ARCHIVE            0x20 // (Archive) for backup utilities
+#define ATTR_LONG_FILE_NAME     0x0F // (LFN entry) For long file name support
+
 
 // this struct gives everything u have to know about physical layout of my FAT32 emu
 typedef struct 
@@ -65,7 +76,7 @@ typedef struct
 {
     uint8_t directory_name[11]; // Short Name
     uint8_t directory_attributes; 
-    uint8_t directory_NTRes; // Reserved for use by Windows NT. Set value to 0 when a file is created and never modify or look at it after tha
+    uint8_t directory_NTRes; //Optional flags that indicates case information of the SFN.
     uint8_t creation_time_tenth; //   Millisecond stamp at file creation time. This field actually contains a count of tenths of a second.
     uint16_t creation_time; //   Time file was created
     uint16_t creation_date; //   Date file was created
@@ -86,4 +97,3 @@ typedef struct
 
 
 int get_optimal_FAT32sectors(size_t disk_size);
-int extract_dir_entry(char *buf32, DirectoryEntry*);
