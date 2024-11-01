@@ -1,5 +1,6 @@
 #include "fat32.h"
 #include "disk.h"
+#include "commands.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,19 +9,16 @@
 #include <unistd.h>
 #include <time.h>
 
-#define OEM "INANGO\0"
 
-#define MIN_DISKSIZE 1048576 // 1M =  1024*1024 2*20
-#define DEFAULT_DISKSIZE 20971520 //20M = 1024 * 1024 * 20. Used when pathname for disk does not exist 
-#define MAX_DISKSIZE 268435456 // 256M 2**28
+#define MAX_TOKENS      20
+#define MAX_COMMAND_LEN 256
 
-int cd(char *pathname);
-int ls(void);
-int touch(char *filename);
+int format_disk();
 void create_file(char *filename, int isDir, DirectoryEntry* dir_entry);
 int allocate_cluster(void);
 int pathfinder(char *filename);
-int my_mkdir(char *filename);
+char **parse_tokens(char *, int *);
+
 
 Disk g_disk;
 BootSector g_vbs;
@@ -28,11 +26,15 @@ FSinfo g_fsinfo;
 FILE *fp;
 
 
+void slice(const char* str, char* result, size_t start, size_t end) {
+    strncpy(result, str + start, end - start);
+}
+
+
 int open_disk(char *pathname){
     
     struct stat sb;
     size_t pathlen;
-
 
     /* Check if file exist, otherwise create it */
 
@@ -68,16 +70,13 @@ int open_disk(char *pathname){
 
 int create_disk(char *pathname){
     
-
     fp = fopen(pathname, "w+");
-    
     if ( fp == NULL ){
         return -1;
     }
     if (fseek(fp, DEFAULT_DISKSIZE, SEEK_SET) == -1){
         return -1;
     }
-
     fputc('\0', fp);
     fseek(fp, 0, SEEK_SET);
 
@@ -88,7 +87,6 @@ int create_disk(char *pathname){
 int wipe_disk(char *pathname, size_t disk_size){
 
     int status;
-
 
     fseek(fp, g_disk.reserved_area, SEEK_SET);
 
@@ -162,7 +160,7 @@ int format_disk(){
     g_fsinfo.trial_signature = 0xAA550000;
 
     
-    printf("volume BootSector size: %lu\n", sizeof(g_vbs));
+    printf("volume Boot Sector size: %lu\n", sizeof(g_vbs));
 
     if (wipe_disk(g_disk.absolute_path, g_disk.disk_size) != 0){
         return -1;
@@ -175,6 +173,7 @@ int format_disk(){
     g_disk.data_offset = 32;
     g_disk.fat32_offset = 4;
     g_disk.current_directory = g_disk.data_area;
+    g_disk.read_block   = g_vbs.bytes_per_sector * g_vbs.sector_per_cluster;
 
 
     fseek(fp, g_disk.reserved_area, SEEK_SET);
@@ -194,7 +193,8 @@ int format_disk(){
     fwrite(&f32entry, sizeof(f32entry), 1, fp);
     f32entry.mark = EOC_BLOCK;
     fwrite(&f32entry, sizeof(f32entry), 1, fp);
-    
+
+    fseek(fp, g_disk.current_directory, SEEK_SET);    
 }
 
 
@@ -230,6 +230,7 @@ int allocate_cluster(){
             fseek(fp, g_disk.fat_area + (j * 4), SEEK_SET);
             fwrite(&fat32entry, sizeof(fat32entry), 1, fp);
             printf("new allocated cluster number: %d\n", j);
+            fseek(fp, g_disk.current_directory, SEEK_SET);
             return j;
         }
     }
@@ -237,46 +238,68 @@ int allocate_cluster(){
 }
 
 
+//All it does is telling if file exist. And if so returns address to directory entry
 int pathfinder(char *filepath){
     
     char *token;
-    uint32_t start_directory;
+    uint32_t working_directory;
     DirectoryEntry dir_entry;
 
-    int read_block = g_vbs.sector_per_cluster * g_vbs.bytes_per_sector;
 
-    if (filepath[0] == '\\'){
-        start_directory = g_disk.data_area;
+    if (filepath[0] == '/'){
+        working_directory = g_disk.data_area;
     } else {
-        start_directory = g_disk.current_directory;
+        working_directory = g_disk.current_directory;
     }
 
-    fseek(fp, start_directory, SEEK_SET);
-    token = strtok(filepath, "\\");    
+    fseek(fp, working_directory, SEEK_SET);
+    token = strtok(filepath, "/");    
+    
+    if (token == NULL){
+        return g_disk.data_area;
+    }
 
     while(token != NULL){
-        for (int i = 0; i < read_block; i += g_disk.data_offset){
+        
+        start:
+        for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
             fread(&dir_entry, sizeof(dir_entry), 1, fp);
             if (strncmp(token, dir_entry.directory_name, 11) == 0){
-                return i + start_directory;
+                token = strtok(NULL, "/");
+                if (token == NULL){
+                    fseek(fp, g_disk.current_directory, SEEK_SET);
+                    return i + working_directory;
+                }
+           
+                if ((dir_entry.directory_attributes & ATTR_DIRECTORY) == 0){
+                    working_directory = dir_entry.first_cluster_high << 16 | dir_entry.first_cluster_lower;
+                    fseek(fp, working_directory, SEEK_SET);
+                    goto start;
+                }
             }
         }
-        token = strtok(NULL, "\\");
+        token = strtok(NULL, "/");        
     }
+    fseek(fp, g_disk.current_directory, SEEK_SET);
     return -1;
 }
 
 
-int ls(){
+int ls(char *pathname){
     
-    int read_block;
     DirectoryEntry dir_entry;
+    uint32_t working_directory;
 
-    read_block = g_vbs.bytes_per_sector * g_vbs.sector_per_cluster; //2048    
-    fseek(fp, g_disk.data_area, SEEK_SET);
-    
+    if (pathname != NULL){
+        working_directory = pathfinder(pathname);
+    } else {
+        working_directory = g_disk.current_directory;
+    }
+
+    fseek(fp, working_directory, SEEK_SET);
+
     while(1){
-        for (int i = 0; i < read_block; i += g_disk.data_offset){
+        for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
             fread(&dir_entry, g_disk.data_offset, 1, fp);
             if ((dir_entry.creation_date | 0x00000000) == 0){
                 return 0;
@@ -284,8 +307,7 @@ int ls(){
             if (dir_entry.directory_attributes & ATTR_HIDDEN){
                 continue;
             }
-            printf("file name: %s\tstart cluster: %d\n", dir_entry.directory_name,
-                            dir_entry.first_cluster_lower);
+            printf("file name: %s\n", dir_entry.directory_name);
         }
         break;
     }
@@ -293,11 +315,32 @@ int ls(){
 }
 
 
-
-
-
 int cd(char *pathname){
-    return 1;
+    
+    DirectoryEntry dir_entry;
+
+    uint32_t start_directory, endfile;
+    endfile = pathfinder(pathname);
+    
+    if (endfile == -1){
+        printf("file does not exist\n");
+        return -1;
+    }
+    fseek(fp, endfile, SEEK_SET);
+    fread(&dir_entry, sizeof(dir_entry), 1, fp);
+    
+    if ((dir_entry.directory_attributes & ATTR_DIRECTORY) == 0){
+        printf("specified file is not a directory bro...FILE: %s, %d\n", 
+            dir_entry.directory_name, dir_entry.first_cluster_lower);
+        fseek(fp, g_disk.current_directory, SEEK_SET);
+        return -1;
+    }
+
+    start_directory = endfile;
+    fseek(fp, start_directory, SEEK_SET);
+    g_disk.current_directory = start_directory;
+    return 0;
+
 }
 
 
@@ -359,7 +402,7 @@ void create_file(char* filename, int isDir, DirectoryEntry *dir_entry){
     if (filename[0] == '.'){
         attributes |= ATTR_HIDDEN;
     }
-    if (isDir == 0){
+    if (isDir != 0){
         attributes |= ATTR_DIRECTORY;
     }
 
@@ -369,23 +412,40 @@ void create_file(char* filename, int isDir, DirectoryEntry *dir_entry){
 }
 
 
-int touch(char *filename){
+int touch(char *pathname){
     
-    int read_block, cluster_number;
     DirectoryEntry dir_entry;
+    uint32_t working_directory;
+    char *cp_pathname = malloc(strlen(pathname));
+    int walker;
 
-    read_block = g_vbs.bytes_per_sector * g_vbs.sector_per_cluster;
-    fseek(fp, g_disk.data_area, SEEK_SET);
+    for (walker = strlen(pathname) - 1; walker >= 0; walker--){
+        if (pathname[walker] == '/'){
+            slice(pathname, cp_pathname, 0, walker);
+            break;
+        }
+    }
 
+    if (walker == -1){
+        cp_pathname = pathname;
+    }
+
+    if (cp_pathname != NULL){
+        working_directory = pathfinder(cp_pathname);
+    } else {
+        working_directory = g_disk.current_directory;
+    }
+
+
+    fseek(fp, g_disk.current_directory, SEEK_SET);
+    
     while(1){
-        for (int i = 0; i < read_block; i += g_disk.data_offset){
-            
+        for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
             // read each entry to find free space to plase new direcotry entry strcuture
             fread(&dir_entry, g_disk.data_offset, 1, fp);
             if (dir_entry.creation_time == 0){
-
                 // fill dir_entry struct with meta information
-                create_file(filename, 0, &dir_entry);
+                create_file(pathname, 0, &dir_entry);
                 fseek(fp, g_disk.data_area + i, SEEK_SET);
                 //write new dir entry inside directory
                 fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
@@ -394,42 +454,125 @@ int touch(char *filename){
         }
         break;
     }
+    fseek(fp, g_disk.current_directory, SEEK_SET);
     return 0;
 }
 
 
-int my_mkdir(char *filename){
+int my_mkdir(char *pathname){
+        
+    DirectoryEntry dir_entry;
+
+    fseek(fp, g_disk.current_directory, SEEK_SET);    
+    while(1){
+        for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
+
+            // read each entry to find free space to plase new direcotry entry strcuture
+            fread(&dir_entry, g_disk.data_offset, 1, fp);
+            if (dir_entry.creation_time == 0){
+                // fill dir_entry struct with meta information
+                create_file(pathname, 1, &dir_entry);
+                fseek(fp, g_disk.data_area + i, SEEK_SET);
+                //write new dir entry inside directory
+                fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
+                break;
+            }
+        }
+        break;
+    }
+    fseek(fp, g_disk.current_directory, SEEK_SET);
+    
     return 1;
 }
 
+char **parse_tokens(char *line, int *argc){
+    char **tokens;
+    char *token;
+    int len;
+
+    tokens = malloc(MAX_TOKENS * sizeof(char *));
+    token = strtok(line, " \n");
+    int i = 0;
+
+    while (token != NULL){
+        len = strlen(token);
+        tokens[i] = calloc(len * sizeof(char), 1);
+        strncpy(tokens[i], token, len);
+        token = strtok(NULL, " \n");
+        i++;
+    }
+
+    *argc = i; 
+    return tokens;
+}
+
+
+int command_launcher(char **tokens, int argc){
+    /*
+    commands with their number of arguments
+
+    ls      - 1
+    cd      - 1
+    mkdir   - 1
+    touch   - 1
+    format  - 0
+    */
+
+    char* argv = NULL;
+
+    if (argc > 2){
+        printf("Too many arguments...\n");
+        return -1;
+    }
+
+    if (argc == 2){
+        argv = tokens[1];
+    }
+
+    if (strncmp(tokens[0], "ls", sizeof(tokens[0])) == 0){
+        ls(argv);
+    } else if (strncmp(tokens[0], "cd", sizeof(tokens[0])) == 0){
+        printf("cd command...\n");
+        //cd(argv);
+    } else if (strncmp(tokens[0], "touch", sizeof(tokens[0])) == 0){
+        if (argc != 2){
+            printf("Err...touch <file name> usage\n");
+            return -1;
+        }
+        touch(argv);
+    } else if (strncmp(tokens[0], "mkdir", sizeof(tokens[0])) == 0){
+        printf("mkdir command...\n");
+        //my_mkdir(argv);
+    } else if (strncmp(tokens[0], "format", sizeof(tokens[0])) == 0){
+        if (argc != 1){
+            printf("Too many arguments...\n");
+            return -1;
+        }
+        format_disk();
+    } else {
+        printf("Err...Invalid command\n");
+        return -1;
+    }
+    return 0;
+}
 
 
 void loop(){
-    
-    BootSector vbs;
-    FSinfo fsinfo;
-    DirectoryEntry* dir;
 
-    format_disk();
-    ls();
+    char *prompt = "/ >";
+    char line[MAX_COMMAND_LEN];
+    char **tokens;
+    int argc;
 
-    if(pathfinder("sperma5") != -1){
-        printf("file sperma exists\n");
-    } else {
-        printf("file sperma does not exists\n");
-    }
-    touch("sperma");
-    touch("sperma2");
-    touch("sperma5");
-    if(pathfinder("sperma5") != -1){
-        printf("file sperma exists\n");
-    } else {
-        printf("file sperma does not exists\n");
-    }
-    touch(".Dimaloot");
-    touch("LootIn)");
-    ls();
+    while(1){
+        printf("%s ", prompt);
+        fgets(line, sizeof(line), stdin);
+        tokens = parse_tokens(line, &argc);
+        command_launcher(tokens, argc);
+        fseek(fp, g_disk.current_directory, SEEK_SET);
+    } 
 }
+
 
 int main(int argc, char *argv[])
 {
@@ -445,28 +588,3 @@ int main(int argc, char *argv[])
     }
     return 0;
 }
-
-
-
-/* 
-
-0xFFFFFFFF
-
-0x000000F8
-
-1111 1111 1111 1111     1111 1111 1111 1111
-0000 0000 0000 0000     1111 1111 1000 0000
-
-XOR
-
-1111 1111 1111 1111     0000 0000 0111 1111
-                        XOR
-                        1111 1111 1111 1111 
-
-
-1111 1111 1111 1111     1111 1111 1000 0000
-
-0xFFFFFFF8
-
-
-*/

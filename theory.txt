@@ -160,3 +160,34 @@ Time Format.
 *   Bits 0–4: 2-second count, valid value range 0–29 inclusive (0 – 58 seconds).
 *   Bits 5–10: Minutes, valid value range 0–59 inclusive.
 *   Bits 11–15: Hours, valid value range 0–23 inclusive.
+
+
+
+
+/*
+
+    /path > cd /hello/world
+
+    get tokens by witespace:
+
+    1 token = cd            (command name)
+    2 token = /hello/world  (command argv)
+
+    1 token = exec command
+    2 - ... = argv
+
+
+    ls(char*)   ls /root
+    cd(char *)  cd /root
+    format();   format 
+
+
+    launcher(**tokens){
+        for i in ["ls", "cd", "format"]:
+            if (i == tokens[0]):
+                execute() 
+    }
+
+*/
+
+
