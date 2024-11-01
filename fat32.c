@@ -16,7 +16,7 @@
 int format_disk();
 void create_file(char *filename, int isDir, DirectoryEntry* dir_entry);
 int allocate_cluster(void);
-int pathfinder(char *filename);
+int pathfinder(char *filename, DirectoryEntry *);
 char **parse_tokens(char *, int *);
 
 
@@ -25,6 +25,8 @@ BootSector g_vbs;
 FSinfo g_fsinfo;
 FILE *fp;
 
+
+DirectoryEntry root_entry;
 
 void slice(const char* str, char* result, size_t start, size_t end) {
     strncpy(result, str + start, end - start);
@@ -194,7 +196,11 @@ int format_disk(){
     f32entry.mark = EOC_BLOCK;
     fwrite(&f32entry, sizeof(f32entry), 1, fp);
 
-    fseek(fp, g_disk.current_directory, SEEK_SET);    
+    root_entry.directory_attributes = ATTR_VOLUME_ID | ATTR_DIRECTORY;
+    root_entry.first_cluster_high = (g_vbs.root_cluster_number & 0xFFFF0000) >> 16;
+    root_entry.first_cluster_lower = g_vbs.root_cluster_number & 0x0000FFFF;
+
+    strncpy(g_disk.current_directory_name, "/", 11);
 }
 
 
@@ -230,6 +236,7 @@ int allocate_cluster(){
             fseek(fp, g_disk.fat_area + (j * 4), SEEK_SET);
             fwrite(&fat32entry, sizeof(fat32entry), 1, fp);
             printf("new allocated cluster number: %d\n", j);
+
             fseek(fp, g_disk.current_directory, SEEK_SET);
             return j;
         }
@@ -239,12 +246,10 @@ int allocate_cluster(){
 
 
 //All it does is telling if file exist. And if so returns address to directory entry
-int pathfinder(char *filepath){
+int pathfinder(char *filepath, DirectoryEntry *dir_entry){
     
     char *token;
     uint32_t working_directory;
-    DirectoryEntry dir_entry;
-
 
     if (filepath[0] == '/'){
         working_directory = g_disk.data_area;
@@ -256,23 +261,27 @@ int pathfinder(char *filepath){
     token = strtok(filepath, "/");    
     
     if (token == NULL){
+        memcpy(dir_entry, &root_entry, sizeof(DirectoryEntry));
         return g_disk.data_area;
     }
 
     while(token != NULL){
-        
+
         start:
         for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
-            fread(&dir_entry, sizeof(dir_entry), 1, fp);
-            if (strncmp(token, dir_entry.directory_name, 11) == 0){
+            fread(dir_entry, sizeof(DirectoryEntry), 1, fp);
+            if (strncmp(token, dir_entry->directory_name, 11) == 0){
                 token = strtok(NULL, "/");
                 if (token == NULL){
-                    fseek(fp, g_disk.current_directory, SEEK_SET);
-                    return i + working_directory;
+                    return dir_entry->first_cluster_high << 16 | dir_entry->first_cluster_lower * 
+                    g_disk.read_block + g_disk.data_area - (2 * g_disk.read_block);
                 }
            
-                if ((dir_entry.directory_attributes & ATTR_DIRECTORY) == 0){
-                    working_directory = dir_entry.first_cluster_high << 16 | dir_entry.first_cluster_lower;
+                if ((dir_entry->directory_attributes & ATTR_DIRECTORY) == 0){
+                    working_directory = (
+                    (dir_entry->first_cluster_high << 16 | dir_entry->first_cluster_lower) * 
+                    g_disk.read_block + g_disk.data_area - (2 * g_disk.read_block)
+                    );
                     fseek(fp, working_directory, SEEK_SET);
                     goto start;
                 }
@@ -291,7 +300,7 @@ int ls(char *pathname){
     uint32_t working_directory;
 
     if (pathname != NULL){
-        working_directory = pathfinder(pathname);
+        working_directory = pathfinder(pathname, &dir_entry);
     } else {
         working_directory = g_disk.current_directory;
     }
@@ -319,26 +328,27 @@ int cd(char *pathname){
     
     DirectoryEntry dir_entry;
 
-    uint32_t start_directory, endfile;
-    endfile = pathfinder(pathname);
+    uint32_t endfile;
+    endfile = pathfinder(pathname, &dir_entry);
     
+
     if (endfile == -1){
         printf("file does not exist\n");
         return -1;
     }
-    fseek(fp, endfile, SEEK_SET);
-    fread(&dir_entry, sizeof(dir_entry), 1, fp);
-    
     if ((dir_entry.directory_attributes & ATTR_DIRECTORY) == 0){
         printf("specified file is not a directory bro...FILE: %s, %d\n", 
             dir_entry.directory_name, dir_entry.first_cluster_lower);
-        fseek(fp, g_disk.current_directory, SEEK_SET);
         return -1;
     }
 
-    start_directory = endfile;
-    fseek(fp, start_directory, SEEK_SET);
-    g_disk.current_directory = start_directory;
+    g_disk.current_directory = endfile;
+    
+    if (endfile == g_disk.data_area){
+        strncpy(g_disk.current_directory_name, "/", 11);
+    } else {
+        strncpy(g_disk.current_directory_name, dir_entry.directory_name, 11);
+    }
     return 0;
 
 }
@@ -427,17 +437,17 @@ int touch(char *pathname){
     }
 
     if (walker == -1){
-        cp_pathname = pathname;
+        cp_pathname = NULL;
     }
 
     if (cp_pathname != NULL){
-        working_directory = pathfinder(cp_pathname);
+        printf("working directory: %u", working_directory);
+        working_directory = pathfinder(cp_pathname, &dir_entry);
     } else {
         working_directory = g_disk.current_directory;
     }
 
-
-    fseek(fp, g_disk.current_directory, SEEK_SET);
+    fseek(fp, working_directory, SEEK_SET);
     
     while(1){
         for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
@@ -446,7 +456,7 @@ int touch(char *pathname){
             if (dir_entry.creation_time == 0){
                 // fill dir_entry struct with meta information
                 create_file(pathname, 0, &dir_entry);
-                fseek(fp, g_disk.data_area + i, SEEK_SET);
+                fseek(fp, g_disk.current_directory + i, SEEK_SET);
                 //write new dir entry inside directory
                 fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
                 break;
@@ -454,16 +464,36 @@ int touch(char *pathname){
         }
         break;
     }
-    fseek(fp, g_disk.current_directory, SEEK_SET);
     return 0;
 }
 
 
 int my_mkdir(char *pathname){
-        
-    DirectoryEntry dir_entry;
 
-    fseek(fp, g_disk.current_directory, SEEK_SET);    
+    DirectoryEntry dir_entry;
+    uint32_t working_directory;
+    char *cp_pathname = malloc(strlen(pathname));
+    int walker;
+
+    for (walker = strlen(pathname) - 1; walker >= 0; walker--){
+        if (pathname[walker] == '/'){
+            slice(pathname, cp_pathname, 0, walker);
+            break;
+        }
+    }
+
+    if (walker == -1){
+        cp_pathname = NULL;
+    }
+
+    if (cp_pathname != NULL){
+        working_directory = pathfinder(cp_pathname, &dir_entry);
+    } else {
+        working_directory = g_disk.current_directory;
+    }
+
+    fseek(fp, working_directory, SEEK_SET);
+
     while(1){
         for (int i = 0; i < g_disk.read_block; i += g_disk.data_offset){
 
@@ -472,16 +502,14 @@ int my_mkdir(char *pathname){
             if (dir_entry.creation_time == 0){
                 // fill dir_entry struct with meta information
                 create_file(pathname, 1, &dir_entry);
-                fseek(fp, g_disk.data_area + i, SEEK_SET);
+                fseek(fp, g_disk.current_directory + i, SEEK_SET);
                 //write new dir entry inside directory
                 fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
                 break;
             }
         }
         break;
-    }
-    fseek(fp, g_disk.current_directory, SEEK_SET);
-    
+    } 
     return 1;
 }
 
@@ -508,6 +536,7 @@ char **parse_tokens(char *line, int *argc){
 
 
 int command_launcher(char **tokens, int argc){
+    
     /*
     commands with their number of arguments
 
@@ -532,8 +561,7 @@ int command_launcher(char **tokens, int argc){
     if (strncmp(tokens[0], "ls", sizeof(tokens[0])) == 0){
         ls(argv);
     } else if (strncmp(tokens[0], "cd", sizeof(tokens[0])) == 0){
-        printf("cd command...\n");
-        //cd(argv);
+        cd(argv);
     } else if (strncmp(tokens[0], "touch", sizeof(tokens[0])) == 0){
         if (argc != 2){
             printf("Err...touch <file name> usage\n");
@@ -541,8 +569,11 @@ int command_launcher(char **tokens, int argc){
         }
         touch(argv);
     } else if (strncmp(tokens[0], "mkdir", sizeof(tokens[0])) == 0){
-        printf("mkdir command...\n");
-        //my_mkdir(argv);
+        if (argc != 2){
+            printf("Err...mkdir <file name> usage\n");
+            return -1;
+        }
+        my_mkdir(argv);
     } else if (strncmp(tokens[0], "format", sizeof(tokens[0])) == 0){
         if (argc != 1){
             printf("Too many arguments...\n");
@@ -559,17 +590,18 @@ int command_launcher(char **tokens, int argc){
 
 void loop(){
 
-    char *prompt = "/ >";
+    char *prompt = ">";
     char line[MAX_COMMAND_LEN];
     char **tokens;
     int argc;
 
     while(1){
-        printf("%s ", prompt);
+        printf("%s %s ", g_disk.current_directory_name, prompt);
         fgets(line, sizeof(line), stdin);
         tokens = parse_tokens(line, &argc);
         command_launcher(tokens, argc);
         fseek(fp, g_disk.current_directory, SEEK_SET);
+        free(tokens);
     } 
 }
 

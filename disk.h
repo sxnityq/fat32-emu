@@ -16,6 +16,7 @@ typedef struct {
     uint16_t data_offset;  // for data area 32. It simplifies working with directory entries
     uint8_t  fat32_offset; // for fat32 entry aka 4 byte
     uint32_t current_directory; // number of bytes from beginning of the disk file that points to current directory 
+    uint8_t current_directory_name[11]; // name for current directory to show in cd
     uint16_t read_block;        // sectors per cluster * bytes in sector
 } Disk;
 
