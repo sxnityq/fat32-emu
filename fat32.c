@@ -245,7 +245,7 @@ int format_disk(){
     root_entry.first_cluster_lower = g_vbs.root_cluster_number & 0x0000FFFF;
 
     strncpy(g_disk.current_directory_name, "/", 11);
-    g_disk.is_formatted == TRUE;
+    g_disk.is_formatted = TRUE;
 }
 
 
