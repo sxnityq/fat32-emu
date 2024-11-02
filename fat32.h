@@ -22,7 +22,7 @@ Upper 2 bits are reserved and must be zero.
 #define ATTR_LONG_FILE_NAME     0x0F // (LFN entry) For long file name support
 
 #define OEM "INANGO\0"
-
+#define TRIAL_SIGNATURE         0xAA55    
 
 // this struct gives everything u have to know about physical layout of my FAT32 emu
 typedef struct 

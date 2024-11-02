@@ -18,9 +18,11 @@ typedef struct {
     uint32_t current_directory; // number of bytes from beginning of the disk file that points to current directory 
     uint8_t current_directory_name[11]; // name for current directory to show in cd
     uint16_t read_block;        // sectors per cluster * bytes in sector
+    uint8_t is_formatted;       // True if Volume Boot signature is set
 } Disk;
 
 
 int create_disk(char *pathname);
 int open_disk(char *pathname);
-int wipe_disk(char *pathanme, size_t disk_size);
+int wipe_disk(size_t disk_size);
+int fill_disk();

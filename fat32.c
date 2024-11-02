@@ -1,6 +1,7 @@
 #include "fat32.h"
 #include "disk.h"
 #include "commands.h"
+#include "collors.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,9 @@
 
 #define MAX_TOKENS      20
 #define MAX_COMMAND_LEN 256
+
+#define TRUE            1
+#define FALSE           0
 
 int format_disk();
 void create_file(char *filename, int isDir, DirectoryEntry* dir_entry);
@@ -42,7 +46,8 @@ int open_disk(char *pathname){
 
     if (access(pathname, F_OK) != 0){
         if (create_disk(pathname) != 0){
-            printf("creation error\n");
+            printf("%s%s%s", 
+            RED, "creation error\n", ENDCOLOR);
             return -1;
         }
     } else {
@@ -50,11 +55,13 @@ int open_disk(char *pathname){
     }
 
     if (stat(pathname, &sb)!= 0){
-        printf("some stat error\n");
+        printf("%s%s%s", 
+        RED, "some stat error\n", ENDCOLOR);
         return -1;
     }
     
-    printf("file path: %s\tsize: %lu\n", pathname, sb.st_size);
+    printf("%sdisk file: %s\tsize: %lu%s\n", 
+    BLUE, pathname, sb.st_size, ENDCOLOR);
 
     if (sb.st_size >= MAX_DISKSIZE || sb.st_size <= MIN_DISKSIZE){
         printf("Specified file is too smal to be valid disk file\n");
@@ -66,6 +73,7 @@ int open_disk(char *pathname){
     g_disk.disk_size = sb.st_size;
     g_disk.absolute_path = malloc(pathlen);
     strncpy(g_disk.absolute_path, pathname, pathlen);
+    fill_disk();
     return 0;
 }
 
@@ -86,7 +94,7 @@ int create_disk(char *pathname){
 }
 
 
-int wipe_disk(char *pathname, size_t disk_size){
+int wipe_disk(size_t disk_size){
 
     int status;
 
@@ -96,20 +104,52 @@ int wipe_disk(char *pathname, size_t disk_size){
         status = fputc('\0', fp);
         if (status == -1){
             if (feof(fp)){
-                printf("EOF detected. Some strange shit is going on\n");
+                printf("%s%s%s", 
+                RED, "EOF detected. Some strange shit is going on\n", ENDCOLOR);
             } else {
-                printf("Some error happend. Aborting\n");
+                printf("%s%s%s", 
+                RED, "Some error happend. Aborting\n", ENDCOLOR);
             }
             return -1;
         }
     }
-    printf("disk file successfully wiped! Congrats\n");
+    printf("%s%s%s",
+    BLUE, "disk file successfully wiped! Congrats\n", ENDCOLOR);
     return 0;
 }
 
 /*====================================
 WORK WITH FILE SYSTEM RAHTER THAN DISK
 ======================================*/
+int fill_disk(){
+    fseek(fp, 0, SEEK_SET);
+    fread(&g_vbs, sizeof(BootSector), 1, fp);
+    if (g_vbs.trial_signature == TRIAL_SIGNATURE){
+        g_disk.is_formatted = TRUE; 
+        fseek(fp, g_vbs.FSinfo * g_vbs.bytes_per_sector, SEEK_SET);
+        fread(&g_fsinfo, sizeof(FSinfo), 1, fp);
+
+        g_disk.reserved_area = 0;
+        g_disk.fat_area      = g_vbs.reserved_sectors * g_vbs.bytes_per_sector;
+        g_disk.data_area     = g_disk.fat_area + (g_vbs.sectors_per_fat32 * 512 
+                            * g_vbs.fat_count) + g_vbs.root_cluster_number * 512 * 4;
+        g_disk.data_offset = 32;
+        g_disk.fat32_offset = 4;
+        g_disk.current_directory = g_disk.data_area;
+        g_disk.read_block   = g_vbs.bytes_per_sector * g_vbs.sector_per_cluster;
+
+        root_entry.directory_attributes = ATTR_VOLUME_ID | ATTR_DIRECTORY;
+        root_entry.first_cluster_high = (g_vbs.root_cluster_number & 0xFFFF0000) >> 16;
+        root_entry.first_cluster_lower = g_vbs.root_cluster_number & 0x0000FFFF;
+
+        strncpy(g_disk.current_directory_name, "/", 11);
+        fseek(fp, g_disk.current_directory, SEEK_SET);
+        return 1;
+    } 
+    return 0;
+}
+
+
 int format_disk(){
     
     Fat32Entry f32entry;
@@ -149,7 +189,8 @@ int format_disk(){
     memcpy(g_vbs.volume_label, "NO NAME    ", 11);
     memcpy(g_vbs.file_system_type, "FAT32   ", 8);
     memset(g_vbs.boot_code, '\0', 420);
-    g_vbs.trial_signature     =  0xAA55;
+    g_vbs.trial_signature     =  TRIAL_SIGNATURE;
+
 
 
     // FSINFO
@@ -162,9 +203,10 @@ int format_disk(){
     g_fsinfo.trial_signature = 0xAA550000;
 
     
-    printf("volume Boot Sector size: %lu\n", sizeof(g_vbs));
+    printf("%svolume Boot Sector size: %lu%s\n", 
+    BLUE, sizeof(g_vbs), ENDCOLOR);
 
-    if (wipe_disk(g_disk.absolute_path, g_disk.disk_size) != 0){
+    if (wipe_disk(g_disk.disk_size) != 0){
         return -1;
     }
 
@@ -181,8 +223,10 @@ int format_disk(){
     fseek(fp, g_disk.reserved_area, SEEK_SET);
     // RESERVED AREA
     fwrite(&g_vbs, sizeof(g_vbs), 1, fp);
+    //FSinfo
     fseek(fp, (g_vbs.FSinfo * g_vbs.bytes_per_sector), SEEK_SET);
     fwrite(&g_fsinfo, sizeof(g_fsinfo), 1, fp);
+    //BACKUP
     fseek(fp, (g_vbs.backup_boot_sector * g_vbs.bytes_per_sector), SEEK_SET);
     fwrite(&g_vbs, sizeof(g_vbs), 1, fp);           // make a volume boot sector backup
     fwrite(&g_fsinfo, sizeof(g_fsinfo), 1, fp);     // and add fsinfo backup also
@@ -201,6 +245,7 @@ int format_disk(){
     root_entry.first_cluster_lower = g_vbs.root_cluster_number & 0x0000FFFF;
 
     strncpy(g_disk.current_directory_name, "/", 11);
+    g_disk.is_formatted == TRUE;
 }
 
 
@@ -235,7 +280,9 @@ int allocate_cluster(){
             fat32entry.mark = EOC_BLOCK;
             fseek(fp, g_disk.fat_area + (j * 4), SEEK_SET);
             fwrite(&fat32entry, sizeof(fat32entry), 1, fp);
-            printf("new allocated cluster number: %d\n", j);
+            
+            printf("%snew allocated cluster number: %d%s\n",
+            BLUE, j, ENDCOLOR);
 
             fseek(fp, g_disk.current_directory, SEEK_SET);
             return j;
@@ -299,6 +346,9 @@ int ls(char *pathname){
     DirectoryEntry dir_entry;
     uint32_t working_directory;
 
+    char *color = GREEN; 
+    char dir_mark = 'F';
+
     if (pathname != NULL){
         working_directory = pathfinder(pathname, &dir_entry);
     } else {
@@ -316,7 +366,16 @@ int ls(char *pathname){
             if (dir_entry.directory_attributes & ATTR_HIDDEN){
                 continue;
             }
-            printf("file name: %s\n", dir_entry.directory_name);
+
+            if (dir_entry.directory_attributes & ATTR_DIRECTORY){
+                color = MAGENTA;
+                dir_mark = 'D';
+            } else {
+                color = GREEN;
+                dir_mark = 'F';
+            }
+            printf("file: %s%11s\t%c%s\n",
+            color, dir_entry.directory_name, dir_mark, ENDCOLOR);
         }
         break;
     }
@@ -333,12 +392,13 @@ int cd(char *pathname){
     
 
     if (endfile == -1){
-        printf("file does not exist\n");
+        printf("%s%s%s\n",
+        RED, "file does not exist", ENDCOLOR);
         return -1;
     }
     if ((dir_entry.directory_attributes & ATTR_DIRECTORY) == 0){
-        printf("specified file is not a directory bro...FILE: %s, %d\n", 
-            dir_entry.directory_name, dir_entry.first_cluster_lower);
+        printf("%sspecified file is not a directory bro...FILE: %s, %d%s\n",
+        RED, dir_entry.directory_name, dir_entry.first_cluster_lower, ENDCOLOR);
         return -1;
     }
 
@@ -366,7 +426,8 @@ void create_file(char* filename, int isDir, DirectoryEntry *dir_entry){
     struct tm *tm;
     
     if ((tm = localtime(&now)) == NULL) {
-        printf ("Error extracting time stuff\n");
+        printf("%s%s%s\n",
+        RED, "Error extracting time stuff", ENDCOLOR);
         return;
     }
     tm->tm_mon += 1;
@@ -441,7 +502,6 @@ int touch(char *pathname){
     }
 
     if (cp_pathname != NULL){
-        printf("working directory: %u", working_directory);
         working_directory = pathfinder(cp_pathname, &dir_entry);
     } else {
         working_directory = g_disk.current_directory;
@@ -550,7 +610,8 @@ int command_launcher(char **tokens, int argc){
     char* argv = NULL;
 
     if (argc > 2){
-        printf("Too many arguments...\n");
+        printf("%s%s%s\n",
+        RED, "Too many arguments...", ENDCOLOR);
         return -1;
     }
 
@@ -559,29 +620,55 @@ int command_launcher(char **tokens, int argc){
     }
 
     if (strncmp(tokens[0], "ls", sizeof(tokens[0])) == 0){
-        ls(argv);
+        if (g_disk.is_formatted == TRUE){
+            ls(argv);
+        } else {
+            printf("%s%s%s\n", 
+            RED, "Err...Disk is not formatted. Please write format command", ENDCOLOR);
+        }
+    
     } else if (strncmp(tokens[0], "cd", sizeof(tokens[0])) == 0){
-        cd(argv);
+        if (g_disk.is_formatted == TRUE){
+            cd(argv);
+        } else {
+            printf("%s%s%s\n", 
+            RED, "Err...Disk is not formatted. Please write format command", ENDCOLOR);
+        }
+    
     } else if (strncmp(tokens[0], "touch", sizeof(tokens[0])) == 0){
-        if (argc != 2){
-            printf("Err...touch <file name> usage\n");
-            return -1;
+        if (g_disk.is_formatted == TRUE){
+            if (argc != 2){
+                printf("%s%s%s\n", 
+                RED, "Err...touch <file name> usage", ENDCOLOR);
+                return -1;
+            }
+            touch(argv);
+        } else {
+            printf("%s%s%s\n", 
+            RED, "Err...Disk is not formatted. Please write format command", ENDCOLOR);
         }
-        touch(argv);
     } else if (strncmp(tokens[0], "mkdir", sizeof(tokens[0])) == 0){
-        if (argc != 2){
-            printf("Err...mkdir <file name> usage\n");
-            return -1;
-        }
-        my_mkdir(argv);
+        if (g_disk.is_formatted == TRUE){
+            if (argc != 2){
+                printf("%s%s%s\n", 
+                RED, "Err...mkdir <file name> usage", ENDCOLOR);
+                return -1;
+            }
+            my_mkdir(argv);
+        } else {
+            printf("%s%s%s\n", 
+            RED, "Err...Disk is not formatted. Please write format command", ENDCOLOR);
+         }
     } else if (strncmp(tokens[0], "format", sizeof(tokens[0])) == 0){
         if (argc != 1){
-            printf("Too many arguments...\n");
+            printf("%s%s%s\n",
+            RED, "Too many arguments...", ENDCOLOR);
             return -1;
         }
         format_disk();
     } else {
-        printf("Err...Invalid command\n");
+        printf("%s%s%s\n",
+        RED, "Err...Invalid command", ENDCOLOR);
         return -1;
     }
     return 0;
@@ -609,12 +696,14 @@ void loop(){
 int main(int argc, char *argv[])
 {
     if (argc != 2){
-        printf("wrong usage. <command> <path to disk file>\n");
+        printf("%s%s%s\n",
+        RED, "wrong usage. <command> <path to disk file>", ENDCOLOR);
         return -1;
     }
     
     char *pathname = argv[1];
     
+    g_disk.is_formatted = FALSE;
     if (open_disk(pathname) == 0){
         loop(fp);
     }
