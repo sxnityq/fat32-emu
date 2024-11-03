@@ -67,7 +67,7 @@ typedef struct
     uint32_t lead_signature; // 0x41615252. Is used to validate that this sector is indeed FSinfo
     uint8_t reserved1[480]; // reservde for future use. Should be filled with 0
     uint32_t struct_signature; // 0x61417272 One more signature
-    uint32_t free_clusters; // Contains the last free clusters cound. 0xFFFFFFFF - means free is unknown
+    uint32_t free_clusters; // Contains the free clusters count. 0xFFFFFFFF - means free is unknown
     uint32_t next_free;      // hint for FAT driver where to search free clusters. Typically this value isset to the last cluster number that the driver allocated. If the value is 0xFFFFFFFF, then there is no hint and the driver should start looking at cluster 2
     uint8_t reserved2[12];  // one more reserved shit
     uint32_t trial_signature; //Value 0xAA550000. This trail signature is used to validate that this is in fact an FSInfo sector

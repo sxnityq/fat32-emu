@@ -320,18 +320,18 @@ int pathfinder(char *filepath, DirectoryEntry *dir_entry){
             if (strncmp(token, dir_entry->directory_name, 11) == 0){
                 token = strtok(NULL, "/");
                 if (token == NULL){
-                    return dir_entry->first_cluster_high << 16 | dir_entry->first_cluster_lower * 
+                    return (dir_entry->first_cluster_high << 16 | dir_entry->first_cluster_lower) * 
                     g_disk.read_block + g_disk.data_area - (2 * g_disk.read_block);
                 }
-           
-                if ((dir_entry->directory_attributes & ATTR_DIRECTORY) == 0){
-                    working_directory = (
-                    (dir_entry->first_cluster_high << 16 | dir_entry->first_cluster_lower) * 
-                    g_disk.read_block + g_disk.data_area - (2 * g_disk.read_block)
-                    );
+                
+                if (dir_entry->directory_attributes & ATTR_DIRECTORY){
+                    working_directory = (dir_entry->first_cluster_high << 16 | dir_entry->first_cluster_lower) * 
+                    g_disk.read_block + g_disk.data_area - (2 * g_disk.read_block);
                     fseek(fp, working_directory, SEEK_SET);
                     goto start;
                 }
+                fseek(fp, g_disk.current_directory, SEEK_SET);
+                return -1;
             }
         }
         token = strtok(NULL, "/");        
@@ -351,6 +351,16 @@ int ls(char *pathname){
 
     if (pathname != NULL){
         working_directory = pathfinder(pathname, &dir_entry);
+        if (working_directory == -1){
+            printf("%s%s%s\n", 
+            RED, "Err...wrong path to dir", ENDCOLOR);
+            return -1;
+        }
+        if ((dir_entry.directory_attributes & ATTR_DIRECTORY) == 0){
+            printf("%s%s%s\n", 
+            RED, "Err...file is not a directory", ENDCOLOR);
+            return -1;
+        }
     } else {
         working_directory = g_disk.current_directory;
     }
@@ -487,22 +497,31 @@ int touch(char *pathname){
     
     DirectoryEntry dir_entry;
     uint32_t working_directory;
-    char *cp_pathname = malloc(strlen(pathname));
+    char *cp_pathname = calloc(strlen(pathname), 1);
+    char *file2create = calloc(strlen(pathname), 1);
     int walker;
 
     for (walker = strlen(pathname) - 1; walker >= 0; walker--){
         if (pathname[walker] == '/'){
             slice(pathname, cp_pathname, 0, walker);
+            slice(pathname, file2create, walker + 1, strlen(pathname));
             break;
         }
     }
 
     if (walker == -1){
         cp_pathname = NULL;
+        file2create = pathname;
     }
+
 
     if (cp_pathname != NULL){
         working_directory = pathfinder(cp_pathname, &dir_entry);
+        if (working_directory == -1){
+            printf("%s%s%s\n", 
+            RED, "Err...wrong path to dir", ENDCOLOR);
+            return -1;
+        }
     } else {
         working_directory = g_disk.current_directory;
     }
@@ -515,8 +534,8 @@ int touch(char *pathname){
             fread(&dir_entry, g_disk.data_offset, 1, fp);
             if (dir_entry.creation_time == 0){
                 // fill dir_entry struct with meta information
-                create_file(pathname, 0, &dir_entry);
-                fseek(fp, g_disk.current_directory + i, SEEK_SET);
+                create_file(file2create, 0, &dir_entry);
+                fseek(fp, working_directory + i, SEEK_SET);
                 //write new dir entry inside directory
                 fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
                 break;
@@ -532,22 +551,31 @@ int my_mkdir(char *pathname){
 
     DirectoryEntry dir_entry;
     uint32_t working_directory;
-    char *cp_pathname = malloc(strlen(pathname));
+    char *cp_pathname = calloc(strlen(pathname), 1);
+    char *file2create = calloc(strlen(pathname), 1);
     int walker;
 
     for (walker = strlen(pathname) - 1; walker >= 0; walker--){
         if (pathname[walker] == '/'){
             slice(pathname, cp_pathname, 0, walker);
+            slice(pathname, file2create, walker + 1, strlen(pathname));
             break;
         }
     }
 
     if (walker == -1){
         cp_pathname = NULL;
+        file2create = pathname;
     }
+
 
     if (cp_pathname != NULL){
         working_directory = pathfinder(cp_pathname, &dir_entry);
+        if (working_directory == -1){
+            printf("%s%s%s\n", 
+            RED, "Err...wrong path to dir", ENDCOLOR);
+            return -1;
+        }
     } else {
         working_directory = g_disk.current_directory;
     }
@@ -561,8 +589,8 @@ int my_mkdir(char *pathname){
             fread(&dir_entry, g_disk.data_offset, 1, fp);
             if (dir_entry.creation_time == 0){
                 // fill dir_entry struct with meta information
-                create_file(pathname, 1, &dir_entry);
-                fseek(fp, g_disk.current_directory + i, SEEK_SET);
+                create_file(file2create, 1, &dir_entry);
+                fseek(fp, working_directory + i, SEEK_SET);
                 //write new dir entry inside directory
                 fwrite(&dir_entry, sizeof(dir_entry), 1, fp);
                 break;
@@ -629,6 +657,11 @@ int command_launcher(char **tokens, int argc){
     
     } else if (strncmp(tokens[0], "cd", sizeof(tokens[0])) == 0){
         if (g_disk.is_formatted == TRUE){
+            if (argc != 2){
+                printf("%s%s%s\n", 
+                RED, "Err...cd <file name> usage", ENDCOLOR);
+                return -1;
+            }
             cd(argv);
         } else {
             printf("%s%s%s\n", 
