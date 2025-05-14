@@ -1,11 +1,7 @@
+### it is very buggy and doesn't have any purpose to be used for. It was a test assignment to create something similar to fat 32 file system. Only education purpose. Only PERSONAL education purpose. Idk where all these starts come for. Anyway i will mark it as archieve to not mislead anybody (If anyone will ever get attention on this)
+
 # FAT32 emulator
 ❗ Test assignment for INANGO
-
-## VERY IMPORTANT
-1)  MANY FEATURES IN OG FAT32 ARE DROPPED FOR THE SAKE OF SIMPLICITY (SEE ... FOR DETAILS)
-2)  MINIMUM SIZE OF DISK FILE IS SET TO 1M. IT IS NOT RECOMMENDED TO REDEFINE THIS VALUE
-3)  DURING WRITING & TESTING I HAVE FOUND SOME SMALL BUGS. SO EVEN IF IT SEEMS FOR ME TO BE OKAY IT STILL MIGHT BE POSSIBLE FOR U TO CATCH SOME ISSUES. PLEASE CONTACT ME IF U DISCOVER SOMETHING UNUSUAL
-
 
 ## STRUCTURE
 
